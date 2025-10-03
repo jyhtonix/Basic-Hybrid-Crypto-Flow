@@ -1,0 +1,316 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Hybrid: Signature + Symmetric + RSA (Alice → Bob)</title>
+  <style>
+    :root{--bg:#071422;--card:#082033;--accent:#06b6d4;--muted:#94a3b8;--glass: rgba(255,255,255,0.03)}
+    html,body{height:100%;margin:0;font-family:Inter,ui-sans-serif,system-ui,Segoe UI,Roboto,'Helvetica Neue',Arial;color:#e6eef6;background:linear-gradient(180deg,var(--bg),#021022)}
+    .wrap{max-width:1100px;margin:18px auto;padding:18px}
+    header{display:flex;align-items:center;justify-content:space-between}
+    h1{font-size:18px;margin:0}
+    p.lead{color:var(--muted);margin:6px 0 16px}
+    .container{display:grid;grid-template-columns:360px 1fr;gap:18px}
+    .card{background:var(--card);padding:12px;border-radius:12px;box-shadow:0 6px 18px rgba(2,6,23,0.6)}
+    label{display:block;font-size:13px;color:var(--muted);margin-top:8px}
+    input[type=text], input[type=number], textarea{width:100%;padding:8px;border-radius:8px;border:1px solid rgba(255,255,255,0.04);background:var(--glass);color:#fff}
+    button{margin-top:10px;padding:10px 12px;border-radius:10px;border:0;background:linear-gradient(90deg,var(--accent),#3b82f6);color:#021022;font-weight:700;cursor:pointer}
+    .stage{min-height:460px;background:linear-gradient(180deg,rgba(255,255,255,0.02),transparent);border-radius:12px;padding:14px;position:relative;overflow:auto}
+    .actor{width:160px;height:90px;border-radius:10px;background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.03);display:flex;flex-direction:column;align-items:center;justify-content:center;margin-bottom:12px}
+    .actor h3{margin:0;font-size:15px}
+    .actor p{margin:4px 0 0;font-size:12px;color:var(--muted)}
+    .row{display:flex;gap:12px;align-items:flex-start}
+    .col{flex:1}
+    .log{margin-top:12px;background:rgba(255,255,255,0.02);padding:8px;border-radius:8px;height:240px;overflow:auto;font-family:monospace;font-size:13px}
+    .small{font-size:12px;color:var(--muted)}
+    .kbd{font-family:monospace;background:rgba(0,0,0,0.25);padding:6px;border-radius:6px}
+    pre{white-space:pre-wrap;word-break:break-all}
+    .pubkey{background:rgba(0,0,0,0.18);padding:8px;border-radius:6px;font-family:monospace;font-size:12px;max-height:90px;overflow:auto}
+    footer{margin-top:12px;color:var(--muted);font-size:12px}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <div>
+        <h1>Hybrid Crypto Flow: Signature + Symmetric + RSA (Alice → Bob)</h1>
+        <p class="lead">Implements the exact flow you provided. Uses modern WebCrypto APIs: RSA-PSS for signatures, RSA-OAEP for encrypting the session key, and AES-GCM for symmetric encryption.</p>
+      </div>
+      <div class="small">Flow steps are logged. Use <strong>Generate Keys</strong> first, then <strong>Run All</strong> or use <strong>Step</strong>.</div>
+    </header>
+
+    <div class="container">
+      <div class="card">
+        <label>Plaintext message</label>
+        <textarea id="plaintext" rows="4">Hello Bob, this is Alice.</textarea>
+
+        <label>Session key length (bytes)</label>
+        <input id="klen" type="number" value="32" min="8" max="64">
+
+        <div style="display:flex;gap:8px;margin-top:8px">
+          <button id="genKeys">Generate Keys (Alice sign, Bob encrypt)</button>
+          <button id="runAll">Run All (full flow)</button>
+          <button id="stepBtn">Step</button>
+          <button id="reset">Reset</button>
+        </div>
+
+        <div style="margin-top:10px">
+          <div class="small">Alice's public signing key (PEM)</div>
+          <div class="pubkey" id="alicePub">(not generated)</div>
+          <div class="small" style="margin-top:8px">Bob's public encryption key (PEM)</div>
+          <div class="pubkey" id="bobPub">(not generated)</div>
+        </div>
+
+        <div class="small" style="margin-top:10px">Notes: This demo is for teaching — it uses secure primitives but keeps data encoding simple (JSON+base64) for clarity.</div>
+      </div>
+
+      <div>
+        <div class="card stage">
+          <div class="row">
+            <div class="col">
+              <div class="actor"><h3>Alice (Sender)</h3><p>Has signing key pair</p></div>
+              <div class="actor"><h3>Server / PKI</h3><p>Publishes public keys</p></div>
+            </div>
+            <div class="col">
+              <div class="actor"><h3>Network</h3><p>Sends (encSessionKey, encPayload, iv)</p></div>
+              <div class="actor"><h3>Bob (Receiver)</h3><p>Has decryption key pair</p></div>
+            </div>
+          </div>
+
+          <div class="log" id="log"></div>
+
+          <footer>
+            <div class="small">Flow implemented: 1) Key exchange 2) Hash 3) Sign 4) Session key generation 5) Symmetric encrypt of (message+signature) 6) Encrypt session key with Bob's public key 7) Send 8) Bob decrypts session key 9) Bob decrypts payload 10) Read 11) Hash 12) Verify signature.</div>
+          </footer>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // Helpers
+    const el = id => document.getElementById(id);
+    const log = msg => { el('log').innerText += msg + '
+'; el('log').scrollTop = el('log').scrollHeight; };
+    const encoder = new TextEncoder(); const decoder = new TextDecoder();
+
+    function bufferToBase64(buf){ const bytes = new Uint8Array(buf); let binary=''; for(let i=0;i<bytes.byteLength;i++){ binary += String.fromCharCode(bytes[i]); } return btoa(binary); }
+    function base64ToBuffer(b64){ const binary = atob(b64); const len = binary.length; const bytes = new Uint8Array(len); for (let i=0;i<len;i++){ bytes[i] = binary.charCodeAt(i); } return bytes.buffer; }
+    function bufferToHex(buf){ const bytes = new Uint8Array(buf); return Array.from(bytes).map(b=>b.toString(16).padStart(2,'0')).join(''); }
+
+    async function exportSPKItoPEM(key){ const spki = await crypto.subtle.exportKey('spki', key); const b64 = bufferToBase64(spki); const pem = ['-----BEGIN PUBLIC KEY-----', b64.match(/.{1,64}/g).join('
+'), '-----END PUBLIC KEY-----'].join('
+'); return pem; }
+
+    // Key containers
+    let aliceSignKeyPair = null; // RSA-PSS
+    let bobEncKeyPair = null; // RSA-OAEP
+
+    async function generateKeys(){
+      el('log').innerText = '';
+      log('Generating Alice signing key pair (RSA-PSS, 2048)...');
+      aliceSignKeyPair = await crypto.subtle.generateKey({ name: 'RSA-PSS', modulusLength: 2048, publicExponent: new Uint8Array([1,0,1]), hash: 'SHA-256' }, true, ['sign','verify']);
+      log('Generating Bob encryption key pair (RSA-OAEP, 2048)...');
+      bobEncKeyPair = await crypto.subtle.generateKey({ name: 'RSA-OAEP', modulusLength: 2048, publicExponent: new Uint8Array([1,0,1]), hash: 'SHA-256' }, true, ['encrypt','decrypt']);
+
+      const alicePem = await exportSPKItoPEM(aliceSignKeyPair.publicKey);
+      const bobPem = await exportSPKItoPEM(bobEncKeyPair.publicKey);
+      el('alicePub').innerText = alicePem; el('bobPub').innerText = bobPem;
+      log('Keys generated and public keys exported to PEM (displayed). Public keys are considered exchanged.');
+    }
+
+    // High-level flow functions
+    async function computeHash(bytes){ const digest = await crypto.subtle.digest('SHA-256', bytes); return digest; }
+
+    async function aliceCreatePayload()
+    {
+      const plaintext = el('plaintext').value;
+      const plainBytes = encoder.encode(plaintext);
+      log(`Alice: plaintext bytes = [${Array.from(plainBytes).join(',')}]`);
+
+      // Step 2: Hash
+      const hashBuf = await computeHash(plainBytes);
+      log(`Alice: SHA-256(message) = ${bufferToHex(hashBuf)}`);
+
+      // Step 3: Sign (digital signature) using Alice private sign key (RSA-PSS)
+      const signature = await crypto.subtle.sign({ name: 'RSA-PSS', saltLength: 32 }, aliceSignKeyPair.privateKey, plainBytes);
+      log(`Alice: signature (base64) = ${bufferToBase64(signature)}`);
+
+      // Step 4: Generate session key (AES-GCM)
+      const klen = Number(el('klen').value);
+      log(`Alice: generating AES-GCM session key (${klen*8} bits)`);
+      const sessionKey = await crypto.subtle.generateKey({ name: 'AES-GCM', length: klen*8 }, true, ['encrypt','decrypt']);
+      const sessionRaw = await crypto.subtle.exportKey('raw', sessionKey);
+      log(`Alice: session key (hex) = ${bufferToHex(sessionRaw)}`);
+
+      // Step 5: Symmetric encrypt message+signature using session key
+      const payloadObj = { message: bufferToBase64(plainBytes), signature: bufferToBase64(signature) };
+      const payloadStr = JSON.stringify(payloadObj);
+      const payloadBytes = encoder.encode(payloadStr);
+      const iv = crypto.getRandomValues(new Uint8Array(12));
+      const encBuffer = await crypto.subtle.encrypt({ name: 'AES-GCM', iv: iv }, sessionKey, payloadBytes);
+      log(`Alice: AES-GCM encrypted payload (base64) = ${bufferToBase64(encBuffer)} (iv=${bufferToBase64(iv)})`);
+
+      // Step 6: Encrypt the session key with Bob's public RSA-OAEP key
+      const bobPub = bobEncKeyPair.publicKey;
+      const encSessionKey = await crypto.subtle.encrypt({ name: 'RSA-OAEP' }, bobPub, sessionRaw);
+      log(`Alice: RSA-OAEP encrypted session key (base64) = ${bufferToBase64(encSessionKey)}`);
+
+      // Step 7: Alice sends (encSessionKey, encPayload, iv) to Bob — simulate by returning an object
+      return { encSessionKey, encPayload: encBuffer, iv, originalPlaintext: plaintext, aliceHash: bufferToHex(hashBuf) };
+    }
+
+    async function bobProcessReceived(packet){
+      // Step 8: Bob decrypts session key using his private RSA-OAEP key
+      log('Bob: attempting to decrypt session key using RSA-OAEP private key...');
+      let sessionRaw;
+      try{
+        sessionRaw = await crypto.subtle.decrypt({ name: 'RSA-OAEP' }, bobEncKeyPair.privateKey, packet.encSessionKey);
+      } catch (e){ log('Bob: failed to decrypt session key: '+e); throw e; }
+      log(`Bob: recovered session key (hex) = ${bufferToHex(sessionRaw)}`);
+
+      // Import AES key
+      const aesKey = await crypto.subtle.importKey('raw', sessionRaw, { name: 'AES-GCM' }, true, ['decrypt']);
+
+      // Step 9: Bob decrypts the message+signature using the session key
+      log('Bob: decrypting payload with AES-GCM...');
+      let decrypted;
+      try{
+        decrypted = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: packet.iv }, aesKey, packet.encPayload);
+      } catch (e){ log('Bob: AES-GCM decryption failed: ' + e); throw e; }
+
+      const payloadStr = decoder.decode(decrypted);
+      log(`Bob: decrypted payload JSON = ${payloadStr}`);
+      const payloadObj = JSON.parse(payloadStr);
+      const messageBytes = base64ToBuffer(payloadObj.message);
+      const signatureBytes = base64ToBuffer(payloadObj.signature);
+
+      // Step 10: Bob can now read the message
+      const messageText = decoder.decode(messageBytes);
+      log(`Bob: recovered plaintext = "${messageText}"`);
+
+      // Step 11: Bob calculates hash of message
+      const bobHashBuf = await computeHash(messageBytes);
+      log(`Bob: SHA-256(message) = ${bufferToHex(bobHashBuf)}`);
+
+      // Step 12: Bob verifies Alice's signature using Alice's public key
+      const alicePub = aliceSignKeyPair.publicKey;
+      const verified = await crypto.subtle.verify({ name: 'RSA-PSS', saltLength: 32 }, alicePub, signatureBytes, messageBytes);
+      log(`Bob: signature verification result = ${verified}`);
+
+      // Also compare hashes
+      log(`Alice's hash (from Alice step) = ${packet.aliceHash}`);
+      log(`Bob's computed hash = ${bufferToHex(bobHashBuf)}`);
+      const hashMatch = packet.aliceHash === bufferToHex(bobHashBuf);
+      log(`Hashes match = ${hashMatch}`);
+
+      return { messageText, verified, hashMatch };
+    }
+
+    // Run all in sequence
+    async function runAll(){
+      el('log').innerText = '';
+      if (!aliceSignKeyPair || !bobEncKeyPair){ log('Keys not present — generate keys first.'); return; }
+      try{
+        const packet = await aliceCreatePayload();
+        log('Alice: packet prepared and sent to network.');
+        // Simulate network transfer delay
+        await new Promise(r=>setTimeout(r,500));
+        const res = await bobProcessReceived(packet);
+        log('Flow complete.');
+      } catch (e){ log('Run failed: '+e); }
+    }
+
+    // Stepper: follows the numbered steps as requested
+    let stepState = 0; let stepPacket = null;
+    async function step(){
+      try{
+        if (stepState === 0){ el('log').innerText = ''; if (!aliceSignKeyPair || !bobEncKeyPair){ log('Keys not present — generate keys first.'); return; } log('STEP 1: Keys already exchanged (public keys available).'); stepState = 1; }
+        else if (stepState === 1){ // hash
+          const plainBytes = encoder.encode(el('plaintext').value);
+          const hashBuf = await computeHash(plainBytes);
+          log(`STEP 2: Alice computes SHA-256(message) = ${bufferToHex(hashBuf)}`);
+          stepState = 2;
+        }
+        else if (stepState === 2){ // sign
+          const plainBytes = encoder.encode(el('plaintext').value);
+          const signature = await crypto.subtle.sign({ name: 'RSA-PSS', saltLength: 32 }, aliceSignKeyPair.privateKey, plainBytes);
+          log(`STEP 3: Alice signs message -> signature (base64) = ${bufferToBase64(signature)}`);
+          stepState = 3; stepPacket = { signature }; // store for later
+        }
+        else if (stepState === 3){ // generate session key
+          const klen = Number(el('klen').value);
+          const sessionKey = await crypto.subtle.generateKey({ name: 'AES-GCM', length: klen*8 }, true, ['encrypt','decrypt']);
+          const sessionRaw = await crypto.subtle.exportKey('raw', sessionKey);
+          log(`STEP 4: Alice generates session key (hex) = ${bufferToHex(sessionRaw)}`);
+          stepPacket.sessionKey = sessionKey; stepPacket.sessionRaw = sessionRaw; stepState = 4;
+        }
+        else if (stepState === 4){ // symmetric encrypt message+signature
+          const plainBytes = encoder.encode(el('plaintext').value);
+          const signature = stepPacket.signature;
+          const payloadObj = { message: bufferToBase64(plainBytes), signature: bufferToBase64(signature) };
+          const payloadStr = JSON.stringify(payloadObj);
+          const payloadBytes = encoder.encode(payloadStr);
+          const iv = crypto.getRandomValues(new Uint8Array(12));
+          const enc = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, stepPacket.sessionKey, payloadBytes);
+          stepPacket.encPayload = enc; stepPacket.iv = iv;
+          log(`STEP 5: Alice encrypts message+signature with AES-GCM -> encPayload (base64) = ${bufferToBase64(enc)} (iv=${bufferToBase64(iv)})`);
+          stepState = 5;
+        }
+        else if (stepState === 5){ // encrypt session key with Bob's public key
+          const sessionRaw = stepPacket.sessionRaw;
+          const encSessionKey = await crypto.subtle.encrypt({ name: 'RSA-OAEP' }, bobEncKeyPair.publicKey, sessionRaw);
+          stepPacket.encSessionKey = encSessionKey;
+          log(`STEP 6: Alice encrypts session key with Bob's public key -> encSessionKey (base64) = ${bufferToBase64(encSessionKey)}`);
+          stepState = 6;
+        }
+        else if (stepState === 6){ // send (simulated)
+          log('STEP 7: Alice sends (encSessionKey, encPayload, iv) to Bob (simulated).');
+          stepState = 7;
+        }
+        else if (stepState === 7){ // Bob decrypts session key
+          const sessionRaw = await crypto.subtle.decrypt({ name: 'RSA-OAEP' }, bobEncKeyPair.privateKey, stepPacket.encSessionKey);
+          log(`STEP 8: Bob decrypts session key -> recovered (hex) = ${bufferToHex(sessionRaw)}`);
+          stepPacket.recoveredSessionRaw = sessionRaw;
+          stepState = 8;
+        }
+        else if (stepState === 8){ // Bob decrypts payload
+          const aesKey = await crypto.subtle.importKey('raw', stepPacket.recoveredSessionRaw, { name: 'AES-GCM' }, true, ['decrypt']);
+          const dec = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: stepPacket.iv }, aesKey, stepPacket.encPayload);
+          const payloadStr = decoder.decode(dec); log(`STEP 9: Bob decrypts payload -> JSON = ${payloadStr}`);
+          stepPacket.decPayload = JSON.parse(payloadStr);
+          stepState = 9;
+        }
+        else if (stepState === 9){ // Bob reads
+          const messageBytes = base64ToBuffer(stepPacket.decPayload.message);
+          const text = decoder.decode(messageBytes);
+          log(`STEP 10: Bob reads message: "${text}"`);
+          stepState = 10;
+        }
+        else if (stepState === 10){ // Bob hashes
+          const messageBytes = base64ToBuffer(stepPacket.decPayload.message);
+          const h = await computeHash(messageBytes);
+          log(`STEP 11: Bob computes SHA-256(message) = ${bufferToHex(h)}`);
+          stepState = 11;
+        }
+        else if (stepState === 11){ // Bob verifies signature
+          const messageBytes = base64ToBuffer(stepPacket.decPayload.message);
+          const sig = base64ToBuffer(stepPacket.decPayload.signature);
+          const ok = await crypto.subtle.verify({ name: 'RSA-PSS', saltLength: 32 }, aliceSignKeyPair.publicKey, sig, messageBytes);
+          log(`STEP 12: Bob verifies Alice's signature -> ${ok}`);
+          log('STEPPER: flow finished.');
+          stepState = 0; stepPacket = null;
+        }
+      } catch (e){ log('Step failed: ' + e); stepState = 0; stepPacket = null; }
+    }
+
+    // Event listeners
+    el('genKeys').addEventListener('click', generateKeys);
+    el('runAll').addEventListener('click', runAll);
+    el('stepBtn').addEventListener('click', step);
+    el('reset').addEventListener('click', ()=>{ el('log').innerText = ''; el('alicePub').innerText='(not generated)'; el('bobPub').innerText='(not generated)'; aliceSignKeyPair = null; bobEncKeyPair = null; stepState=0; stepPacket=null; });
+
+  </script>
+</body>
+</html>
